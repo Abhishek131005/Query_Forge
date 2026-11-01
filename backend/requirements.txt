@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+transformers==4.46.3
+peft==0.13.2
+accelerate
+safetensors
+sentencepiece==0.2.0
+sympy==1.13.1
