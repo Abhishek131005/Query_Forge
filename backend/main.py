@@ -23,9 +23,25 @@ app = FastAPI(
 )
 
 
+@app.get("/")
+def root():
+    return {
+        "name": "QueryForge AI API",
+        "status": "running",
+        "health": "/health",
+        "docs": "/docs",
+        "generate_sql": "POST /generate-sql"
+    }
+
+
 class SQLRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    schema: str = Field(min_length=1, max_length=12000)
+    schema_: str = Field(
+        ...,
+        alias="schema",
+        min_length=1,
+        max_length=12000
+    )
     model: str = "finetuned"
 
 
@@ -55,7 +71,7 @@ def generate_sql(request: SQLRequest):
     try:
         sql = service.generate_sql(
             question=request.question,
-            schema=request.schema,
+            schema=request.schema_,
             model_type=request.model
         )
 

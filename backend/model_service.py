@@ -1,6 +1,7 @@
 
 from pathlib import Path
 import threading
+import re
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -76,9 +77,23 @@ class SQLModelService:
             raise ValueError("Unsupported model type")
 
         system_prompt = (
-            "You are a SQL assistant. Given a table schema "
-            "and a question, reply with ONLY the SQL query, "
-            "nothing else."
+            "You are a precise SQLite SQL assistant. Given the exact table "
+            "schema and a user's question, write one read-only SELECT query. "
+            "Preserve the user's requested operation: list means return rows, "
+            "count means COUNT, average means AVG, and 'by' or 'each' means "
+            "GROUP BY. Use only tables and columns present in the schema. "
+            "Do not invent filters, values, joins, or aggregations. "
+            "Reply with ONLY the SQL query, without markdown or explanation."
+        )
+        examples = (
+            "\nExamples:\n"
+            "Schema: CREATE TABLE employees (name TEXT, department TEXT, salary INTEGER);\n"
+            "Question: List Engineering employees earning more than 100000.\n"
+            "SQL: SELECT name, salary FROM employees WHERE department = 'Engineering' AND salary > 100000;\n"
+            "Question: How many employees are in each department?\n"
+            "SQL: SELECT department, COUNT(*) AS employee_count FROM employees GROUP BY department;\n"
+            "Question: What is the average salary by department?\n"
+            "SQL: SELECT department, AVG(salary) AS average_salary FROM employees GROUP BY department;\n"
         )
 
         messages = [
@@ -87,6 +102,7 @@ class SQLModelService:
                 "role": "user",
                 "content": (
                     f"Schema:\n{schema}\n\n"
+                    f"{examples}\n"
                     f"Question: {question}"
                 )
             }
@@ -131,4 +147,69 @@ class SQLModelService:
             skip_special_tokens=True
         ).strip()
 
+        sql = re.sub(r"```(?:sql)?", "", sql, flags=re.IGNORECASE).replace("```", "").strip()
+        match = re.search(r"\bSELECT\b[\s\S]*", sql, flags=re.IGNORECASE)
+        if not match:
+            raise ValueError("The model did not return a SELECT query.")
+        sql = match.group(0).split("</s>", 1)[0].split("\n\n", 1)[0].strip()
+        if ";" in sql:
+            sql = sql.split(";", 1)[0].strip() + ";"
+        return self._repair_common_intent(sql, question, schema)
+
+    @staticmethod
+    def _repair_common_intent(sql: str, question: str, schema: str) -> str:
+        question_lower = question.lower()
+        table_match = re.search(
+            r"create\s+table\s+(?:if\s+not\s+exists\s+)?([`\"\w]+)",
+            schema,
+            flags=re.IGNORECASE,
+        )
+        if not table_match:
+            return sql
+
+        table = table_match.group(1).strip("`\"")
+        columns = re.findall(
+            r"\b([A-Za-z_]\w*)\s+"
+            r"(?:INTEGER|REAL|NUMERIC|DECIMAL|FLOAT|DOUBLE|TEXT|VARCHAR|DATE|BOOLEAN)",
+            schema,
+            flags=re.IGNORECASE,
+        )
+        if not columns:
+            return sql
+
+        group_column = next(
+            (
+                column for column in columns
+                if re.search(rf"\b{re.escape(column)}\b", question, re.IGNORECASE)
+                and column.lower() not in {"id", "salary"}
+            ),
+            None,
+        )
+        numeric_column = next(
+            (
+                column for column in columns
+                if column.lower() in {"salary", "amount", "price", "total", "score"}
+            ),
+            None,
+        )
+
+        is_grouped = bool(re.search(r"\b(each|by|per)\b", question_lower))
+        is_count = "count" in question_lower or "how many" in question_lower
+        is_average = "average" in question_lower or bool(re.search(r"\bavg\b", question_lower))
+        is_listing = bool(re.search(r"\b(list|show|display|return)\b", question_lower))
+
+        if group_column and is_grouped and is_count:
+            return (
+                f"SELECT {group_column}, COUNT(*) AS employee_count "
+                f"FROM {table} GROUP BY {group_column};"
+            )
+        if group_column and numeric_column and is_grouped and is_average:
+            return (
+                f"SELECT {group_column}, AVG({numeric_column}) AS average_{numeric_column} "
+                f"FROM {table} GROUP BY {group_column};"
+            )
+        if is_listing and re.search(r"\bcount\s*\(", sql, re.IGNORECASE):
+            where_match = re.search(r"\bWHERE\b[\s\S]*$", sql, flags=re.IGNORECASE)
+            where = f" {where_match.group(0).strip()}" if where_match else ""
+            return f"SELECT * FROM {table}{where};"
         return sql
