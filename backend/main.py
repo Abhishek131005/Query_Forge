@@ -1,10 +1,13 @@
 
 from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.model_service import SQLModelService
 
+logger = logging.getLogger(__name__)
 service = None
 
 
@@ -45,6 +48,27 @@ class SQLRequest(BaseModel):
     model: str = "finetuned"
 
 
+class GenerationConfig(BaseModel):
+    max_new_tokens: int
+    do_sample: bool
+
+
+class SQLResponse(BaseModel):
+    sql: str
+    raw_output: str
+    extracted_sql: str
+    model: str
+    status: str
+    inference_time_seconds: float = Field(ge=0)
+    queue_wait_seconds: float = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    generated_tokens: int = Field(gt=0)
+    device: str
+    generation_config: GenerationConfig
+    prompt_version: str
+    postprocessed: bool
+
+
 @app.get("/health")
 def health():
     return {
@@ -54,8 +78,8 @@ def health():
     }
 
 
-@app.post("/generate-sql")
-def generate_sql(request: SQLRequest):
+@app.post("/generate-sql", response_model=SQLResponse)
+def generate_sql(request: SQLRequest) -> SQLResponse:
     if request.model not in ("base", "finetuned"):
         raise HTTPException(
             status_code=400,
@@ -69,20 +93,14 @@ def generate_sql(request: SQLRequest):
         )
 
     try:
-        sql = service.generate_sql(
+        result = service.generate_sql(
             question=request.question,
             schema=request.schema_,
             model_type=request.model
         )
-
-        return {
-            "sql": sql,
-            "model": request.model,
-            "status": "success"
-        }
-
-    except Exception as exc:
-        print(f"Inference error: {exc}")
+        return SQLResponse(**result)
+    except Exception:
+        logger.exception("Inference error")
         raise HTTPException(
             status_code=500,
             detail="SQL generation failed"

@@ -43,4 +43,17 @@ Response:
 Set `INFERENCE_API_URL` or enter the URL in the sidebar.
 
 ## Safety and limits
-The included SQL executor is only for a fixed trusted demo SQLite database. It accepts a single SELECT, blocks common mutation keywords and caps displayed results. This regex check is **not a production SQL security boundary**. For real user-supplied databases, use an isolated read-only database role, a proper SQL parser/allowlist, query timeouts, row limits, and strict access controls. Uploaded CSVs are preview-only in this starter.
+The SQL executor accepts one read-only `SELECT`/`UNION` statement, including
+read-only CTEs and subqueries. It uses SQLGlot validation, a SQLite read-only
+URI, `PRAGMA query_only`, an authorizer, a five-second progress timeout, and a
+500-row display cap. Truncated results are marked in the UI and history.
+
+These controls are **not a production or multi-tenant security sandbox**.
+SQLite read-only mode and query timeouts do not isolate a malicious process,
+prevent all denial-of-service patterns, or replace operating-system
+permissions. For public traffic, run queries in a separate constrained
+process/container with explicit resource limits and access controls.
+
+History is session-scoped and is not durable across browser sessions. CSV and
+JSON exports contain query metadata and SQL provenance, not result rows or
+uploaded dataset contents by default.

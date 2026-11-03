@@ -2,6 +2,7 @@
 from pathlib import Path
 import threading
 import re
+import time
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -9,6 +10,9 @@ from peft import PeftModel, PeftConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER_PATH = ROOT / "models" / "tinyllama-sql-lora-adapter"
+PROMPT_VERSION = "v1"
+MAX_NEW_TOKENS = 160
+DO_SAMPLE = False
 
 
 class SQLModelService:
@@ -20,6 +24,7 @@ class SQLModelService:
 
         config = PeftConfig.from_pretrained(str(ADAPTER_PATH))
         base_model_id = config.base_model_name_or_path
+        self.base_model_id = base_model_id
 
         self.device = (
             "cuda" if torch.cuda.is_available() else "cpu"
@@ -119,97 +124,70 @@ class SQLModelService:
             return_tensors="pt"
         ).to(self.device)
 
+        queue_start = time.perf_counter()
         with self.lock:
+            queue_wait_seconds = time.perf_counter() - queue_start
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            inference_start = time.perf_counter()
             with torch.inference_mode():
                 if model_type == "base":
                     # Temporarily disable LoRA weights.
                     with self.model.disable_adapter():
                         outputs = self.model.generate(
                             **inputs,
-                            max_new_tokens=160,
-                            do_sample=False,
+                            max_new_tokens=MAX_NEW_TOKENS,
+                            do_sample=DO_SAMPLE,
                             pad_token_id=self.tokenizer.eos_token_id
                         )
                 else:
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=160,
-                        do_sample=False,
+                        max_new_tokens=MAX_NEW_TOKENS,
+                        do_sample=DO_SAMPLE,
                         pad_token_id=self.tokenizer.eos_token_id
                     )
+            if self.device == "cuda":
+                torch.cuda.synchronize()
+            inference_time_seconds = time.perf_counter() - inference_start
 
         new_tokens = outputs[0][
             inputs["input_ids"].shape[1]:
         ]
 
-        sql = self.tokenizer.decode(
+        raw_output = self.tokenizer.decode(
             new_tokens,
             skip_special_tokens=True
-        ).strip()
-
-        sql = re.sub(r"```(?:sql)?", "", sql, flags=re.IGNORECASE).replace("```", "").strip()
-        match = re.search(r"\bSELECT\b[\s\S]*", sql, flags=re.IGNORECASE)
-        if not match:
+        )
+        extracted_sql = self.extract_sql(raw_output)
+        if extracted_sql is None:
             raise ValueError("The model did not return a SELECT query.")
-        sql = match.group(0).split("</s>", 1)[0].split("\n\n", 1)[0].strip()
-        if ";" in sql:
-            sql = sql.split(";", 1)[0].strip() + ";"
-        return self._repair_common_intent(sql, question, schema)
+        return {
+            "sql": extracted_sql,
+            "raw_output": raw_output,
+            "extracted_sql": extracted_sql,
+            "model": model_type,
+            "status": "success",
+            "inference_time_seconds": inference_time_seconds,
+            "queue_wait_seconds": queue_wait_seconds,
+            "input_tokens": inputs["input_ids"].shape[1],
+            "generated_tokens": new_tokens.shape[0],
+            "device": self.device,
+            "generation_config": {
+                "max_new_tokens": MAX_NEW_TOKENS,
+                "do_sample": DO_SAMPLE,
+            },
+            "prompt_version": PROMPT_VERSION,
+            "postprocessed": False,
+        }
 
     @staticmethod
-    def _repair_common_intent(sql: str, question: str, schema: str) -> str:
-        question_lower = question.lower()
-        table_match = re.search(
-            r"create\s+table\s+(?:if\s+not\s+exists\s+)?([`\"\w]+)",
-            schema,
-            flags=re.IGNORECASE,
-        )
-        if not table_match:
-            return sql
-
-        table = table_match.group(1).strip("`\"")
-        columns = re.findall(
-            r"\b([A-Za-z_]\w*)\s+"
-            r"(?:INTEGER|REAL|NUMERIC|DECIMAL|FLOAT|DOUBLE|TEXT|VARCHAR|DATE|BOOLEAN)",
-            schema,
-            flags=re.IGNORECASE,
-        )
-        if not columns:
-            return sql
-
-        group_column = next(
-            (
-                column for column in columns
-                if re.search(rf"\b{re.escape(column)}\b", question, re.IGNORECASE)
-                and column.lower() not in {"id", "salary"}
-            ),
-            None,
-        )
-        numeric_column = next(
-            (
-                column for column in columns
-                if column.lower() in {"salary", "amount", "price", "total", "score"}
-            ),
-            None,
-        )
-
-        is_grouped = bool(re.search(r"\b(each|by|per)\b", question_lower))
-        is_count = "count" in question_lower or "how many" in question_lower
-        is_average = "average" in question_lower or bool(re.search(r"\bavg\b", question_lower))
-        is_listing = bool(re.search(r"\b(list|show|display|return)\b", question_lower))
-
-        if group_column and is_grouped and is_count:
-            return (
-                f"SELECT {group_column}, COUNT(*) AS employee_count "
-                f"FROM {table} GROUP BY {group_column};"
-            )
-        if group_column and numeric_column and is_grouped and is_average:
-            return (
-                f"SELECT {group_column}, AVG({numeric_column}) AS average_{numeric_column} "
-                f"FROM {table} GROUP BY {group_column};"
-            )
-        if is_listing and re.search(r"\bcount\s*\(", sql, re.IGNORECASE):
-            where_match = re.search(r"\bWHERE\b[\s\S]*$", sql, flags=re.IGNORECASE)
-            where = f" {where_match.group(0).strip()}" if where_match else ""
-            return f"SELECT * FROM {table}{where};"
-        return sql
+    def extract_sql(raw_output: str):
+        """Extract the first SELECT statement without changing model output."""
+        match = re.search(r"\bSELECT\b[\s\S]*", raw_output, flags=re.IGNORECASE)
+        if not match:
+            return None
+        extracted = match.group(0).split("</s>", 1)[0].split("\n\n", 1)[0].strip()
+        if ";" in extracted:
+            extracted = extracted.split(";", 1)[0].strip() + ";"
+        return extracted or None

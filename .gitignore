@@ -1,4 +1,6 @@
 .venv/
+.local_data/
+frontend/.local_data/
 __pycache__/
 *.pyc
 .env
@@ -7,3 +9,4 @@ __pycache__/
 .cache/
 .pytest_cache/
 .vscode/
+evaluation/results/

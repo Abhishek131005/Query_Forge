@@ -1,7 +1,9 @@
 """Per-session SQLite CSV workspace for QueryForge AI."""
 import io
+import logging
 import re
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 
@@ -13,12 +15,30 @@ DATA_DIR.mkdir(exist_ok=True)
 MAX_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_COLUMNS = 100
+CLEANUP_AFTER_SECONDS = 30 * 24 * 60 * 60
+logger = logging.getLogger(__name__)
 
 
 def database_path():
     if 'database_id' not in st.session_state:
         st.session_state.database_id = uuid.uuid4().hex
     return DATA_DIR / f"{st.session_state.database_id}.sqlite3"
+
+
+def cleanup_abandoned_databases(active_path=None):
+    """Remove old session databases without touching the current workspace."""
+    active = Path(active_path).resolve() if active_path else None
+    cutoff = time.time() - CLEANUP_AFTER_SECONDS
+    for candidate in DATA_DIR.glob("*.sqlite3"):
+        if active and candidate.resolve() == active:
+            continue
+        try:
+            if candidate.stat().st_mtime < cutoff:
+                candidate.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Could not clean up %s: %s", candidate, exc)
 
 
 def connect():

@@ -1,0 +1,5 @@
+department_id,department_name,location,budget
+10,Engineering,New York,1200000
+20,Sales,Chicago,800000
+30,Finance,Boston,600000
+40,Design,Seattle,700000

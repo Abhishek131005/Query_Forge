@@ -1,0 +1,43 @@
+{
+  "benchmark_version": "employees_departments_v1",
+  "fixture_version": "employees_departments_fixture_v1",
+  "provenance": "Curated local fixture for QueryForge regression evaluation; no uploaded user data.",
+  "schema_id": "employees_departments_v1",
+  "schema_file": "fixtures/schema.sql",
+  "fixtures": [
+    "fixtures/employees.csv",
+    "fixtures/departments.csv"
+  ],
+  "records": [
+    {"id":"emp_001","question":"List every employee name and salary.","reference_sql":"SELECT name, salary FROM employees ORDER BY employee_id;","difficulty":"easy","tags":["projection","sorting"],"order_sensitive":true},
+    {"id":"emp_002","question":"Which employees earn more than 100000?","reference_sql":"SELECT name, salary FROM employees WHERE salary > 100000 ORDER BY salary DESC;","difficulty":"easy","tags":["filter","sorting"],"order_sensitive":true},
+    {"id":"emp_003","question":"Show Engineering employees.","reference_sql":"SELECT name, title FROM employees WHERE department_id = 10 ORDER BY employee_id;","difficulty":"easy","tags":["filter"],"order_sensitive":true},
+    {"id":"emp_004","question":"How many employees are there?","reference_sql":"SELECT COUNT(*) AS employee_count FROM employees;","difficulty":"easy","tags":["count"],"order_sensitive":true},
+    {"id":"emp_005","question":"What is the average salary?","reference_sql":"SELECT AVG(salary) AS average_salary FROM employees;","difficulty":"easy","tags":["average"],"order_sensitive":true},
+    {"id":"emp_006","question":"What is the highest salary?","reference_sql":"SELECT MAX(salary) AS highest_salary FROM employees;","difficulty":"easy","tags":["max"],"order_sensitive":true},
+    {"id":"emp_007","question":"What is the lowest salary?","reference_sql":"SELECT MIN(salary) AS lowest_salary FROM employees;","difficulty":"easy","tags":["min"],"order_sensitive":true},
+    {"id":"emp_008","question":"What is the total salary expense?","reference_sql":"SELECT SUM(salary) AS total_salary FROM employees;","difficulty":"easy","tags":["sum"],"order_sensitive":true},
+    {"id":"emp_009","question":"How many employees are in each department?","reference_sql":"SELECT department_id, COUNT(*) AS employee_count FROM employees GROUP BY department_id ORDER BY department_id;","difficulty":"medium","tags":["count","group_by"],"order_sensitive":true},
+    {"id":"emp_010","question":"What is the average salary in each department?","reference_sql":"SELECT department_id, AVG(salary) AS average_salary FROM employees GROUP BY department_id ORDER BY department_id;","difficulty":"medium","tags":["average","group_by"],"order_sensitive":true},
+    {"id":"emp_011","question":"Which three employees have the highest salaries?","reference_sql":"SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 3;","difficulty":"medium","tags":["sorting","limit"],"order_sensitive":true},
+    {"id":"emp_012","question":"Which employees were hired after 2021?","reference_sql":"SELECT name, hire_date FROM employees WHERE hire_date > '2021-12-31' ORDER BY hire_date;","difficulty":"easy","tags":["date","filter"],"order_sensitive":true},
+    {"id":"emp_013","question":"Which employees have a name beginning with A?","reference_sql":"SELECT name FROM employees WHERE name LIKE 'A%';","difficulty":"easy","tags":["like","filter"],"order_sensitive":false},
+    {"id":"emp_014","question":"Which employees are in department 10 or 30?","reference_sql":"SELECT name, department_id FROM employees WHERE department_id IN (10, 30) ORDER BY employee_id;","difficulty":"easy","tags":["in","filter"],"order_sensitive":true},
+    {"id":"emp_015","question":"Which salaries are between 90000 and 120000?","reference_sql":"SELECT name, salary FROM employees WHERE salary BETWEEN 90000 AND 120000 ORDER BY salary;","difficulty":"medium","tags":["between","filter"],"order_sensitive":true},
+    {"id":"emp_016","question":"Which employees are in Sales or Design?","reference_sql":"SELECT name, department_id FROM employees WHERE department_id = 20 OR department_id = 40 ORDER BY employee_id;","difficulty":"easy","tags":["or","filter"],"order_sensitive":true},
+    {"id":"emp_017","question":"Which engineers earn at least 100000?","reference_sql":"SELECT name, salary FROM employees WHERE department_id = 10 AND salary >= 100000 ORDER BY salary DESC;","difficulty":"medium","tags":["and","filter"],"order_sensitive":true},
+    {"id":"emp_018","question":"List unique job titles.","reference_sql":"SELECT DISTINCT title FROM employees ORDER BY title;","difficulty":"easy","tags":["distinct","sorting"],"order_sensitive":true},
+    {"id":"emp_019","question":"Which departments have more than two employees?","reference_sql":"SELECT department_id, COUNT(*) AS employee_count FROM employees GROUP BY department_id HAVING COUNT(*) > 2;","difficulty":"hard","tags":["group_by","having"],"order_sensitive":false},
+    {"id":"emp_020","question":"Show each department name and its employees.","reference_sql":"SELECT d.department_name, e.name FROM departments d JOIN employees e ON d.department_id = e.department_id ORDER BY d.department_id, e.employee_id;","difficulty":"medium","tags":["join"],"order_sensitive":true},
+    {"id":"emp_021","question":"Which employees work in New York?","reference_sql":"SELECT e.name FROM employees e JOIN departments d ON e.department_id = d.department_id WHERE d.location = 'New York' ORDER BY e.employee_id;","difficulty":"medium","tags":["join","filter"],"order_sensitive":true},
+    {"id":"emp_022","question":"What is the average salary by department name?","reference_sql":"SELECT d.department_name, AVG(e.salary) AS average_salary FROM departments d JOIN employees e ON d.department_id = e.department_id GROUP BY d.department_name ORDER BY d.department_name;","difficulty":"hard","tags":["join","average","group_by"],"order_sensitive":true},
+    {"id":"emp_023","question":"Which department has the largest budget?","reference_sql":"SELECT department_name, budget FROM departments ORDER BY budget DESC LIMIT 1;","difficulty":"medium","tags":["sorting","limit"],"order_sensitive":true},
+    {"id":"emp_024","question":"Which employees earn more than their department budget divided by ten?","reference_sql":"SELECT e.name FROM employees e JOIN departments d ON e.department_id = d.department_id WHERE e.salary > d.budget / 10 ORDER BY e.employee_id;","difficulty":"hard","tags":["join","comparison"],"order_sensitive":true},
+    {"id":"emp_025","question":"Which departments have an employee earning over 150000?","reference_sql":"SELECT DISTINCT d.department_name FROM departments d JOIN employees e ON d.department_id = e.department_id WHERE e.salary > 150000;","difficulty":"hard","tags":["join","distinct","filter"],"order_sensitive":false},
+    {"id":"emp_026","question":"Which employees earn more than the company-wide average?","reference_sql":"SELECT name, salary FROM employees WHERE salary > (SELECT AVG(salary) FROM employees) ORDER BY salary DESC;","difficulty":"hard","tags":["subquery","average"],"order_sensitive":true},
+    {"id":"emp_027","question":"Return the names of employees in departments with a budget above 700000.","reference_sql":"SELECT e.name FROM employees e WHERE e.department_id IN (SELECT department_id FROM departments WHERE budget > 700000) ORDER BY e.employee_id;","difficulty":"hard","tags":["subquery","filter"],"order_sensitive":true},
+    {"id":"emp_028","question":"How many employees are not in Finance?","reference_sql":"SELECT COUNT(*) AS employee_count FROM employees WHERE department_id <> 30;","difficulty":"easy","tags":["count","filter"],"order_sensitive":true},
+    {"id":"emp_029","question":"What are the total salaries for departments 10 and 20?","reference_sql":"SELECT department_id, SUM(salary) AS total_salary FROM employees WHERE department_id IN (10, 20) GROUP BY department_id ORDER BY department_id;","difficulty":"medium","tags":["sum","group_by","in"],"order_sensitive":true},
+    {"id":"emp_030","question":"Show department names whose average salary is at least 110000.","reference_sql":"SELECT d.department_name, AVG(e.salary) AS average_salary FROM departments d JOIN employees e ON d.department_id = e.department_id GROUP BY d.department_name HAVING AVG(e.salary) >= 110000 ORDER BY average_salary DESC;","difficulty":"hard","tags":["join","average","having"],"order_sensitive":true}
+  ]
+}
