@@ -135,7 +135,7 @@ with st.sidebar:
     st.session_state.active_page = page
     st.divider()
     st.caption('Inference endpoint')
-    endpoint=st.text_input('Backend URL',value=os.getenv('INFERENCE_API_URL','http://127.0.0.1:8000'),help='Use a blank value for deterministic demo mode.')
+    endpoint=st.text_input('Backend URL',value=os.getenv('INFERENCE_API_URL',''),help='Leave blank for deterministic demo mode.')
     if endpoint:
         try:
             health = requests.get(endpoint.rstrip('/') + '/health', timeout=2).json()
