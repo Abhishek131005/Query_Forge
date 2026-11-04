@@ -1,3 +1,10 @@
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from sql_executor import execute_sql
 from database import database_path
 from datetime import datetime, timezone
@@ -19,7 +26,6 @@ from database import (
     cleanup_abandoned_databases,
 )
 from evaluation.result_compare import compare_results
-from pathlib import Path
 import streamlit as st
 
 st.set_page_config(page_title='QueryForge AI', page_icon='⚡', layout='wide')
