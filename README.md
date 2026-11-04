@@ -6,10 +6,10 @@ QueryForge is a local Text-to-SQL application:
 Streamlit -> FastAPI -> TinyLlama + LoRA -> SQLGlot -> read-only SQLite -> Plotly
 ```
 
-The frontend supports four pages: AI SQL Studio, Database Explorer, Model
-Comparison, and Model Intelligence. Demo mode uses a clearly labeled built-in
-employees dataset. Uploaded CSVs require a running inference backend for
-generation; manually entered SQL remains available.
+The frontend supports three pages: AI SQL Studio, Database Explorer, and Model
+Comparison. Demo mode uses a clearly labeled built-in employees dataset.
+Uploaded CSVs require a running inference backend for generation; manually
+entered SQL remains available.
 
 ## Windows setup
 
@@ -48,6 +48,27 @@ python -m streamlit run frontend\app.py
 Open the displayed Streamlit URL. The sidebar health indicator distinguishes a
 loaded backend from a configured-but-unavailable endpoint.
 
+## Deploy
+
+The recommended hosted setup uses Streamlit Community Cloud for the frontend
+and Render for the FastAPI inference backend.
+
+1. Push this repository to GitHub.
+2. In Render, create the web service from this repository. The included
+   `render.yaml` installs the backend dependencies, starts FastAPI on Render's
+   assigned port, and configures `/health` as the health check.
+3. Wait for the Render service to report healthy, then copy its public HTTPS
+   URL.
+4. In Streamlit Community Cloud, deploy `frontend/app.py` and set the
+   `INFERENCE_API_URL` secret to the Render URL, without a trailing slash.
+5. Open the Streamlit app and confirm the sidebar reports that the backend is
+   healthy and the model is loaded.
+
+The model adapter is loaded by the backend at startup, so the first deploy and
+first request can take several minutes. Do not expose the backend without
+authentication for sensitive or multi-user workloads; this project is designed
+as a single-user demonstration app.
+
 ## Tests and benchmark
 
 ```powershell
@@ -68,7 +89,6 @@ restricted to read-only analytical statements, has a five-second progress
 timeout, and displays at most 500 rows. These controls are not a complete
 multi-tenant security sandbox.
 
-Model Intelligence displays `Not measured` until a saved benchmark run exists.
 Execution success is not correctness; benchmark accuracy requires matching the
 trusted reference result set. CPU latency depends on local hardware and should
 not be generalized from a small run.

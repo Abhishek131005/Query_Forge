@@ -10,12 +10,16 @@ class SqlExecutorTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / 'fixture.sqlite3'
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             connection.execute('CREATE TABLE employees (id INTEGER, name TEXT, salary INTEGER)')
             connection.executemany(
                 'INSERT INTO employees VALUES (?, ?, ?)',
                 [(1, 'Asha', 120000), (2, 'Rahul', 75000)],
             )
+            connection.commit()
+        finally:
+            connection.close()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -50,11 +54,15 @@ class SqlExecutorTests(unittest.TestCase):
             execute_sql('SELECT load_extension("anything") FROM employees', self.db_path)
 
     def test_results_are_capped_and_marked_truncated(self):
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             connection.executemany(
                 'INSERT INTO employees VALUES (?, ?, ?)',
                 [(index, f'Employee {index}', index) for index in range(3, 505)],
             )
+            connection.commit()
+        finally:
+            connection.close()
 
         frame, _, truncated = execute_sql('SELECT * FROM employees', self.db_path)
         self.assertEqual(len(frame), 500)

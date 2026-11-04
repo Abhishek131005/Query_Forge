@@ -8,3 +8,4 @@ accelerate
 safetensors
 sentencepiece==0.2.0
 sympy==1.13.1
+sqlglot>=26,<29

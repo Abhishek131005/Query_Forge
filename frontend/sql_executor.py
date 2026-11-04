@@ -40,10 +40,10 @@ def execute_sql(sql: str, db_path: Path):
     validated = validate_sql(sql)
     if not db_path.is_file():
         raise ValueError('Workspace database does not exist. Upload a CSV first.')
-    uri = db_path.resolve().as_uri() + '?mode=ro'
     start = time.monotonic()
-    con = sqlite3.connect(uri, uri=True, timeout=2)
+    con = sqlite3.connect(':memory:')
     try:
+        con.deserialize(db_path.read_bytes())
         con.execute('PRAGMA query_only=ON')
         con.set_authorizer(_authorizer)
         def progress():

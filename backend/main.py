@@ -56,6 +56,7 @@ class GenerationConfig(BaseModel):
 class SQLResponse(BaseModel):
     sql: str
     raw_output: str
+    cleaned_output: str
     extracted_sql: str
     model: str
     status: str

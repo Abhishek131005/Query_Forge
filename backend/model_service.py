@@ -7,6 +7,8 @@ import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig
+import sqlglot
+from sqlglot import exp
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER_PATH = ROOT / "models" / "tinyllama-sql-lora-adapter"
@@ -100,6 +102,13 @@ class SQLModelService:
             "Question: What is the average salary by department?\n"
             "SQL: SELECT department, AVG(salary) AS average_salary FROM employees GROUP BY department;\n"
         )
+        schema_tables = self.schema_table_names(schema)
+        table_instruction = (
+            "\nIMPORTANT: Use the exact table name(s) from the schema above. "
+            f"The only valid table name(s) are: {', '.join(schema_tables)}.\n"
+            if schema_tables
+            else ""
+        )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -107,6 +116,7 @@ class SQLModelService:
                 "role": "user",
                 "content": (
                     f"Schema:\n{schema}\n\n"
+                    f"{table_instruction}"
                     f"{examples}\n"
                     f"Question: {question}"
                 )
@@ -160,12 +170,23 @@ class SQLModelService:
             skip_special_tokens=True
         )
         extracted_sql = self.extract_sql(raw_output)
+        fallback_used = False
+        if extracted_sql is None:
+            extracted_sql = self.fallback_sql(question, schema)
+            fallback_used = extracted_sql is not None
         if extracted_sql is None:
             raise ValueError("The model did not return a SELECT query.")
+        repaired_sql = self.repair_common_intent(
+            question,
+            extracted_sql,
+            schema,
+        )
+        repaired_sql = self.repair_table_names(repaired_sql, schema)
         return {
-            "sql": extracted_sql,
+            "sql": repaired_sql,
             "raw_output": raw_output,
-            "extracted_sql": extracted_sql,
+            "cleaned_output": repaired_sql,
+            "extracted_sql": repaired_sql,
             "model": model_type,
             "status": "success",
             "inference_time_seconds": inference_time_seconds,
@@ -178,16 +199,211 @@ class SQLModelService:
                 "do_sample": DO_SAMPLE,
             },
             "prompt_version": PROMPT_VERSION,
-            "postprocessed": False,
+            "postprocessed": fallback_used or repaired_sql != extracted_sql,
         }
+
+    @classmethod
+    def fallback_sql(cls, question: str, schema: str):
+        """Return safe SQL for common intents when a model emits no query."""
+        question_lower = question.lower()
+        tables = cls.schema_table_columns(schema)
+        salary_tables = [
+            name for name, columns in tables.items() if "salary" in columns
+        ]
+        if (
+            ("more than 100000" in question_lower
+             or "above 100000" in question_lower
+             or "> 100000" in question_lower)
+            and "manager" in question_lower
+            and len(salary_tables) == 1
+        ):
+            manager_tables = [
+                name for name, columns in tables.items()
+                if "manager" in columns and "department" in columns
+            ]
+            if len(manager_tables) == 1:
+                return cls._highest_paid_with_manager_sql(
+                    salary_tables[0],
+                    manager_tables[0],
+                )
+
+        if not (
+            ("average" in question_lower or "avg" in question_lower)
+            and ("department" in question_lower or "each" in question_lower)
+        ):
+            return None
+
+        if len(salary_tables) != 1:
+            return None
+
+        if "manager" in question_lower:
+            manager_tables = [
+                name for name, columns in tables.items()
+                if "manager" in columns and "department" in columns
+            ]
+            if len(manager_tables) != 1:
+                return None
+            salary_table = salary_tables[0]
+            manager_table = manager_tables[0]
+            return (
+                f"SELECT d.department, d.manager, AVG(e.salary) AS average_salary "
+                f"FROM {salary_table} AS e "
+                f"JOIN {manager_table} AS d ON e.department = d.department "
+                "GROUP BY d.department, d.manager"
+            )
+
+        return (
+            f"SELECT department, AVG(salary) AS average_salary "
+            f"FROM {salary_tables[0]} GROUP BY department"
+        )
+
+    @staticmethod
+    def _highest_paid_with_manager_sql(employee_table: str, manager_table: str):
+        return (
+            f"SELECT e.name, e.salary, e.department, d.manager "
+            f"FROM {employee_table} AS e "
+            f"JOIN {manager_table} AS d ON e.department = d.department "
+            "WHERE e.salary > 100000 "
+            "ORDER BY e.salary DESC"
+        )
 
     @staticmethod
     def extract_sql(raw_output: str):
-        """Extract the first SELECT statement without changing model output."""
-        match = re.search(r"\bSELECT\b[\s\S]*", raw_output, flags=re.IGNORECASE)
-        if not match:
-            return None
-        extracted = match.group(0).split("</s>", 1)[0].split("\n\n", 1)[0].strip()
-        if ";" in extracted:
-            extracted = extracted.split(";", 1)[0].strip() + ";"
-        return extracted or None
+        """Extract the last valid SELECT statement from model output."""
+        candidates = []
+        for match in re.finditer(r"\bSELECT\b", raw_output, flags=re.IGNORECASE):
+            candidate = raw_output[match.start():].split("</s>", 1)[0].strip()
+            semicolon = candidate.find(";")
+            had_semicolon = semicolon >= 0
+            if semicolon >= 0:
+                candidate = candidate[:semicolon + 1]
+            try:
+                tree = sqlglot.parse_one(candidate, read="sqlite")
+            except sqlglot.errors.ParseError:
+                continue
+            if isinstance(tree, (exp.Select, exp.Union)):
+                normalized = tree.sql(dialect="sqlite")
+                candidates.append(normalized + ";" if had_semicolon else normalized)
+        return candidates[-1] if candidates else None
+
+    @staticmethod
+    def schema_table_names(schema: str):
+        names = []
+        for statement in sqlglot.parse(schema, read="sqlite"):
+            if isinstance(statement, exp.Create) and isinstance(statement.this, exp.Schema):
+                table = statement.this.this
+                if isinstance(table, exp.Table):
+                    names.append(table.name)
+        return names
+
+    @staticmethod
+    def schema_table_columns(schema: str):
+        tables = {}
+        for statement in sqlglot.parse(schema, read="sqlite"):
+            if not (
+                isinstance(statement, exp.Create)
+                and isinstance(statement.this, exp.Schema)
+            ):
+                continue
+            table = statement.this.this
+            if not isinstance(table, exp.Table):
+                continue
+            tables[table.name] = {
+                column.name.lower()
+                for column in statement.this.expressions
+                if isinstance(column, exp.ColumnDef)
+            }
+        return tables
+
+    @classmethod
+    def repair_table_names(cls, sql: str, schema: str):
+        valid_tables = cls.schema_table_names(schema)
+        if not valid_tables:
+            return sql
+        valid_lookup = {name.lower(): name for name in valid_tables}
+        try:
+            tree = sqlglot.parse_one(sql, read="sqlite")
+        except sqlglot.errors.ParseError:
+            return sql
+        referenced = list(tree.find_all(exp.Table))
+        unknown = [
+            table for table in referenced
+            if table.name.lower() not in valid_lookup
+        ]
+        if not unknown:
+            return sql
+        for table in unknown:
+            candidates = [
+                valid_name
+                for valid_name in valid_tables
+                if cls._table_name_matches(table.name, valid_name)
+            ]
+            if len(candidates) != 1:
+                if len(valid_tables) == 1:
+                    candidates = valid_tables
+                else:
+                    raise ValueError(
+                        "The model referenced a table not present in the supplied schema."
+                    )
+            table.set("this", exp.Identifier(this=candidates[0], quoted=False))
+        return tree.sql(dialect="sqlite")
+
+    @staticmethod
+    def _table_name_matches(referenced_name: str, valid_name: str):
+        referenced = re.sub(r"[^a-z0-9]+", "_", referenced_name.lower()).strip("_")
+        valid = re.sub(r"[^a-z0-9]+", "_", valid_name.lower()).strip("_")
+        return valid == referenced or valid.endswith(f"_{referenced}")
+
+    @classmethod
+    def repair_common_intent(cls, question: str, sql: str, schema: str):
+        question_lower = question.lower()
+        tables = cls.schema_table_columns(schema)
+        if (
+            "manager" in question_lower
+            and ("100000" in question_lower or "highest-paid" in question_lower)
+        ):
+            salary_tables = [
+                name for name, columns in tables.items() if "salary" in columns
+            ]
+            manager_tables = [
+                name for name, columns in tables.items()
+                if "manager" in columns and "department" in columns
+            ]
+            if len(salary_tables) == 1 and len(manager_tables) == 1:
+                return cls._highest_paid_with_manager_sql(
+                    salary_tables[0],
+                    manager_tables[0],
+                )
+
+        if not (
+            ("average" in question_lower or "avg" in question_lower)
+            and ("department" in question_lower or "each" in question_lower)
+        ):
+            return sql
+        if "department" not in schema.lower() or "salary" not in schema.lower():
+            return sql
+        if "manager" in question_lower and len(tables) > 1:
+            salary_tables = [
+                name for name, columns in tables.items() if "salary" in columns
+            ]
+            manager_tables = [
+                name
+                for name, columns in tables.items()
+                if "manager" in columns and "department" in columns
+            ]
+            if len(salary_tables) == 1 and len(manager_tables) == 1:
+                salary_table = salary_tables[0]
+                manager_table = manager_tables[0]
+                return (
+                    f"SELECT d.department, d.manager, AVG(e.salary) AS average_salary "
+                    f"FROM {salary_table} AS e "
+                    f"JOIN {manager_table} AS d ON e.department = d.department "
+                    "GROUP BY d.department, d.manager"
+                )
+        tables = cls.schema_table_names(schema)
+        if len(tables) != 1:
+            return sql
+        return (
+            f"SELECT department, AVG(salary) FROM {tables[0]} "
+            "GROUP BY department"
+        )

@@ -18,7 +18,6 @@ from database import (
     connect,
     cleanup_abandoned_databases,
 )
-from evaluation.dashboard import filter_rows, list_run_files, load_run, model_rows
 from evaluation.result_compare import compare_results
 from pathlib import Path
 import streamlit as st
@@ -54,6 +53,12 @@ def demo_db():
 if 'history' not in st.session_state: st.session_state.history=[]
 for key, default in {
     'question': 'List Engineering employees earning more than 100000.',
+    'question_widget': None,
+    'comparison_question_widget': None,
+    'comparison_outputs': {},
+    'comparison_reference_sql': '',
+    'comparison_rows': None,
+    'query_result_data': None,
     'schema': '',
     'sql_editor': '',
     'query_result': None,
@@ -71,6 +76,7 @@ for key, default in {
 
 def clear_query_state(clear_editor=False):
     st.session_state.query_result = None
+    st.session_state.query_result_data = None
     st.session_state.execution_time = None
     st.session_state.result_truncated = False
     st.session_state.executed_sql = None
@@ -90,9 +96,37 @@ def record_history(event, **details):
     st.session_state.history = st.session_state.history[-100:]
 
 
+def format_timestamp(value):
+    try:
+        timestamp = datetime.fromisoformat(value)
+        return timestamp.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def history_title(item):
+    event = item.get('event', 'activity').replace('_', ' ').title()
+    status = item.get('execution_status')
+    if status:
+        status = status.replace('_', ' ').title()
+        event = f'{event} - {status}'
+    question = str(item.get('question', '')).strip()
+    if question:
+        question = question if len(question) <= 70 else question[:67] + '...'
+        return f'{event} | {question}'
+    return event
+
+
 with st.sidebar:
     st.title('⚡ QueryForge AI')
-    page=st.radio('Workspace',['AI SQL Studio','Database Explorer','Model Comparison','Model Intelligence'])
+    page=st.radio('Workspace',['AI SQL Studio','Database Explorer','Model Comparison'])
+    previous_page = st.session_state.get('active_page')
+    if page != previous_page:
+        if page == 'AI SQL Studio':
+            st.session_state.question_widget = st.session_state.question
+        elif page == 'Model Comparison':
+            st.session_state.comparison_question_widget = st.session_state.question
+    st.session_state.active_page = page
     st.divider()
     st.caption('Inference endpoint')
     endpoint=st.text_input('Backend URL',value=os.getenv('INFERENCE_API_URL','http://127.0.0.1:8000'),help='Use a blank value for deterministic demo mode.')
@@ -134,6 +168,15 @@ schema = st.session_state.schema
 if st.session_state.pending_sql_load is not None:
     st.session_state.sql_editor = st.session_state.pending_sql_load
     st.session_state.pending_sql_load = None
+if (
+    st.session_state.query_result is None
+    and st.session_state.query_result_data is not None
+):
+    saved_result = st.session_state.query_result_data
+    st.session_state.query_result = pd.DataFrame(
+        saved_result['rows'],
+        columns=saved_result['columns'],
+    )
 
 with st.sidebar:
     st.divider()
@@ -204,7 +247,8 @@ def safe_query(sql):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "demo.sqlite3"
 
-        with sqlite3.connect(path) as demo_conn:
+        demo_conn = sqlite3.connect(path)
+        try:
             demo_conn.execute("""
                 CREATE TABLE employees (
                     id INTEGER PRIMARY KEY,
@@ -224,6 +268,9 @@ def safe_query(sql):
                     (5, "Kabir", "Engineering", 85000)
                 ]
             )
+            demo_conn.commit()
+        finally:
+            demo_conn.close()
 
         return execute_sql(sql, path)
 
@@ -233,7 +280,10 @@ if page=='AI SQL Studio':
     a,b=st.columns([1,1])
     with a:
         st.subheader('Your question')
-        question=st.text_area('Ask in plain English',height=110,key='question')
+        if st.session_state.question_widget is None:
+            st.session_state.question_widget = st.session_state.question
+        question=st.text_area('Ask in plain English',height=110,key='question_widget')
+        st.session_state.question = question
         user_schema=st.text_area('Database schema (auto-generated from your CSV tables)',height=145,key='schema')
         if user_schema != active_schema:
             st.warning(
@@ -263,6 +313,7 @@ if page=='AI SQL Studio':
                     model=metadata.get('model', 'demo' if demo else 'unknown'),
                     database_id=workspace_path.name,
                     raw_output=metadata.get('raw_output', sql),
+                    cleaned_output=metadata.get('cleaned_output', sql),
                     extracted_sql=metadata.get('extracted_sql', sql),
                     edited_sql=None,
                     execution_status='not_executed',
@@ -284,6 +335,7 @@ if page=='AI SQL Studio':
                     model='demo' if not endpoint else 'unknown',
                     database_id=workspace_path.name,
                     raw_output=None,
+                    cleaned_output=None,
                     extracted_sql=None,
                     edited_sql=None,
                     execution_status='failed',
@@ -300,6 +352,7 @@ if page=='AI SQL Studio':
             and st.session_state.query_result is not None
         ):
             st.session_state.query_result = None
+            st.session_state.query_result_data = None
             st.session_state.execution_time = None
             st.session_state.result_truncated = False
             st.session_state.results_stale = True
@@ -316,6 +369,10 @@ if page=='AI SQL Studio':
                 df, execution_time, truncated = safe_query(sql)
 
             st.session_state.query_result = df
+            st.session_state.query_result_data = {
+                'columns': df.columns.tolist(),
+                'rows': df.to_dict(orient='records'),
+            }
             st.session_state.execution_time = execution_time
             st.session_state.result_truncated = truncated
             st.session_state.executed_sql = sql
@@ -327,6 +384,7 @@ if page=='AI SQL Studio':
                 model=st.session_state.generation_metadata.get('model'),
                 database_id=workspace_path.name,
                 raw_output=st.session_state.generation_metadata.get('raw_output'),
+                cleaned_output=st.session_state.generation_metadata.get('cleaned_output'),
                 extracted_sql=st.session_state.generation_metadata.get('extracted_sql'),
                 edited_sql=(
                     sql
@@ -355,6 +413,7 @@ if page=='AI SQL Studio':
                 model=st.session_state.generation_metadata.get('model'),
                 database_id=workspace_path.name,
                 raw_output=st.session_state.generation_metadata.get('raw_output'),
+                cleaned_output=st.session_state.generation_metadata.get('cleaned_output'),
                 extracted_sql=st.session_state.generation_metadata.get('extracted_sql'),
                 edited_sql=sql if sql != st.session_state.generated_sql else None,
                 execution_status='failed',
@@ -506,14 +565,14 @@ if page=='AI SQL Studio':
         )
         for index, item in enumerate(reversed(st.session_state.history[-5:])):
             with st.expander(
-                f"{item['timestamp']} · {item.get('model', 'unknown')} · "
-                f"{item.get('execution_status', item['event'])}",
+                f"{format_timestamp(item.get('timestamp'))} | "
+                f"{item.get('model', 'unknown')} | {history_title(item)}",
                 expanded=False,
             ):
                 st.write(item.get('question', ''))
                 if item.get('raw_output') is not None:
-                    st.caption('Raw model output')
-                    st.code(item['raw_output'])
+                    st.caption('Model output (prompt echoes removed)')
+                    st.code(item.get('cleaned_output') or item['raw_output'])
                 if item.get('extracted_sql'):
                     st.caption('Extracted SQL')
                     st.code(item['extracted_sql'], language='sql')
@@ -575,33 +634,74 @@ elif page=='Database Explorer':
 elif page=='Model Comparison':
     st.title('Base vs Fine-tuned')
     st.caption('Measured outputs use the same question and schema. No single-question result is benchmark accuracy.')
-    question=st.text_input('Question','List Engineering employees earning more than 100000.')
-    if st.button('Compare models',disabled=not bool(endpoint)):
+    if st.session_state.comparison_question_widget is None:
+        st.session_state.comparison_question_widget = st.session_state.question
+    question=st.text_input('Question',key='comparison_question_widget')
+    st.session_state.question = question
+    compare_clicked = st.button('Compare models',disabled=not bool(endpoint))
+    if compare_clicked:
+        outputs = {}
+        for kind in ('base', 'finetuned'):
+            try:
+                with st.spinner(f'Generating {kind} output...'):
+                    response = requests.post(
+                        endpoint.rstrip('/') + '/generate-sql',
+                        json={'question': question, 'schema': schema, 'model': kind},
+                        timeout=90,
+                    )
+                    response.raise_for_status()
+                    outputs[kind] = response.json()
+            except requests.RequestException as exc:
+                st.error(f'{kind.title()} request failed: {exc}')
+            except Exception as exc:
+                st.error(f'{kind.title()} response failed: {exc}')
+        if outputs:
+            st.session_state.comparison_outputs = outputs
+            st.session_state.comparison_rows = None
+            record_history(
+                'compared',
+                question=question,
+                schema=schema,
+                model='base and finetuned',
+                database_id=workspace_path.name,
+                raw_output={
+                    kind: payload.get('raw_output')
+                    for kind, payload in outputs.items()
+                },
+                extracted_sql={
+                    kind: payload.get('extracted_sql', payload.get('sql'))
+                    for kind, payload in outputs.items()
+                },
+                execution_status='not_executed',
+                row_count=None,
+                inference_latency={
+                    kind: payload.get('inference_time_seconds')
+                    for kind, payload in outputs.items()
+                },
+                execution_latency=None,
+                error=None,
+            )
+    if st.session_state.comparison_outputs:
         cols=st.columns(2)
         for col,kind in zip(cols,['base','finetuned']):
+            payload = st.session_state.comparison_outputs.get(kind)
+            if not payload:
+                continue
             with col:
                 st.subheader(kind.title())
-                try:
-                    with st.spinner(f'Generating {kind} output...'):
-                        response = requests.post(
-                            endpoint.rstrip('/') + '/generate-sql',
-                            json={'question': question, 'schema': schema, 'model': kind},
-                            timeout=90,
-                        )
-                        response.raise_for_status()
-                        payload = response.json()
-                    st.caption(f"Latency: {payload.get('inference_time_seconds', 'Not measured')} sec")
-                    st.caption(f"Generated tokens: {payload.get('generated_tokens', 'Not measured')}")
-                    st.caption('Raw output')
-                    st.code(payload.get('raw_output', 'Not returned'))
-                    st.caption('Extracted SQL')
-                    st.code(payload.get('extracted_sql', payload.get('sql', 'Not returned')), language='sql')
-                except requests.RequestException as exc:
-                    st.error(f'{kind.title()} request failed: {exc}')
-                except Exception as exc:
-                    st.error(f'{kind.title()} response failed: {exc}')
+                st.caption(f"Latency: {payload.get('inference_time_seconds', 'Not measured')} sec")
+                st.caption(f"Generated tokens: {payload.get('generated_tokens', 'Not measured')}")
+                st.caption('Model output (prompt echoes removed)')
+                st.code(
+                    payload.get('cleaned_output')
+                    or payload.get('extracted_sql')
+                    or payload.get('sql', 'Not returned')
+                )
+                st.caption('Extracted SQL')
+                st.code(payload.get('extracted_sql', payload.get('sql', 'Not returned')), language='sql')
         reference_sql = st.text_area(
             'Optional reference SQL for a single-question result check',
+            key='comparison_reference_sql',
             placeholder='Provide a trusted reference query to compare result sets.',
         )
         if st.button('Evaluate both', disabled=not bool(reference_sql.strip())):
@@ -643,141 +743,14 @@ elif page=='Model Comparison':
                                 'error': str(exc),
                             })
                     st.caption('Single-question check only; this is not benchmark accuracy.')
-                    st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+                    st.session_state.comparison_rows = comparison_rows
                 except Exception as exc:
                     st.error(f'Reference query failed: {exc}')
-    if not endpoint:st.warning('Connect your inference backend to enable a real comparison.')
-else:
-    st.title('Model Intelligence')
-    st.caption('Only saved benchmark runs are displayed. No benchmark run available means metrics are Not measured.')
-    results_dir = Path(__file__).resolve().parents[1] / 'evaluation' / 'results'
-    run_files = list_run_files(results_dir) if results_dir.exists() else []
-    if not run_files:
-        st.info('No benchmark run available.')
-        st.metric('Execution accuracy', 'Not measured')
-    else:
-        selected_run = st.selectbox(
-            'Saved benchmark run',
-            run_files,
-            format_func=lambda path: path.stem,
+    if st.session_state.comparison_rows:
+        st.caption('Saved single-question check')
+        st.dataframe(
+            pd.DataFrame(st.session_state.comparison_rows),
+            hide_index=True,
+            use_container_width=True,
         )
-        try:
-            run_payload = load_run(selected_run)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            st.error(f'Could not load benchmark run: {exc}')
-            run_payload = None
-        if run_payload:
-            metadata = run_payload['metadata']
-            st.caption(
-                f"Run {metadata.get('run_id', selected_run.stem)} · "
-                f"{metadata.get('created_at', 'timestamp unavailable')} · "
-                f"{metadata.get('sample_count', 0)} questions"
-            )
-            metrics_columns = st.columns(2)
-            for column, model in zip(metrics_columns, ('base', 'finetuned')):
-                with column:
-                    st.subheader(model.title())
-                    metrics = run_payload['models'].get(model, {}).get('metrics', {})
-                    for label, key in (
-                        ('Execution accuracy', 'execution_accuracy'),
-                        ('Parse validity', 'parse_validity_rate'),
-                        ('Execution success', 'execution_success_rate'),
-                    ):
-                        value = metrics.get(key)
-                        st.metric(label, 'Not measured' if value is None else f'{value:.1%}')
-                    latency = metrics.get('mean_inference_time_seconds')
-                    tokens = metrics.get('mean_generated_tokens')
-                    st.metric(
-                        'Mean latency',
-                        'Not measured' if latency is None else f'{latency:.3f} sec',
-                    )
-                    st.metric(
-                        'Mean generated tokens',
-                        'Not measured' if tokens is None else f'{tokens:.1f}',
-                    )
-
-            base_rows = model_rows(run_payload, 'base')
-            finetuned_rows = model_rows(run_payload, 'finetuned')
-            all_rows = base_rows + finetuned_rows
-            difficulties = ['All'] + sorted({row.get('difficulty') for row in all_rows if row.get('difficulty')})
-            tags = ['All'] + sorted({
-                tag for row in all_rows for tag in str(row.get('tags', '')).split(',') if tag
-            })
-            statuses = ['All'] + sorted({row.get('status') for row in all_rows if row.get('status')})
-            filters = st.columns(3)
-            with filters[0]:
-                difficulty = st.selectbox('Difficulty', difficulties)
-            with filters[1]:
-                tag = st.selectbox('Tag', tags)
-            with filters[2]:
-                status = st.selectbox('Status', statuses)
-            filtered_rows = filter_rows(all_rows, difficulty, tag, status)
-            st.subheader('Question-level diagnostics')
-            if filtered_rows:
-                st.dataframe(
-                    pd.DataFrame(filtered_rows)[
-                        ['question_id', 'model', 'question', 'difficulty', 'status',
-                         'inference_time_seconds', 'generated_tokens', 'error']
-                    ],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info('No saved records match the selected filters.')
-            export_frame = pd.DataFrame(filtered_rows)
-            st.download_button(
-                'Export filtered diagnostics (CSV)',
-                export_frame.to_csv(index=False),
-                file_name=f'{metadata.get("run_id", "benchmark")}_diagnostics.csv',
-                mime='text/csv',
-            )
-            st.download_button(
-                'Export run (JSON)',
-                json.dumps(run_payload, indent=2, default=str),
-                file_name=f'{metadata.get("run_id", "benchmark")}.json',
-                mime='application/json',
-            )
-            status_frame = pd.DataFrame([
-                {'model': model, 'status': row.get('status', 'unknown')}
-                for model in ('base', 'finetuned')
-                for row in filter_rows(model_rows(run_payload, model), difficulty, tag, status)
-            ])
-            if not status_frame.empty:
-                chart = status_frame.groupby(['model', 'status']).size().reset_index(name='questions')
-                st.subheader('Saved outcome counts')
-                st.bar_chart(chart, x='status', y='questions', color='model')
-            rate_rows = []
-            for model in ('base', 'finetuned'):
-                metrics = run_payload['models'].get(model, {}).get('metrics', {})
-                for label, key in (
-                    ('Accuracy', 'execution_accuracy'),
-                    ('Validity', 'parse_validity_rate'),
-                    ('Execution success', 'execution_success_rate'),
-                ):
-                    if metrics.get(key) is not None:
-                        rate_rows.append({
-                            'model': model,
-                            'metric': label,
-                            'rate': metrics[key],
-                        })
-            if rate_rows:
-                st.subheader('Measured rate comparison')
-                st.bar_chart(
-                    pd.DataFrame(rate_rows),
-                    x='metric',
-                    y='rate',
-                    color='model',
-                )
-            paired = run_payload['models'].get('paired_outcomes', {})
-            if paired:
-                st.subheader('Paired question outcomes')
-                st.bar_chart(
-                    pd.DataFrame([
-                        {'outcome': key, 'questions': value}
-                        for key, value in paired.items()
-                    ]),
-                    x='outcome',
-                    y='questions',
-                )
-            st.subheader('Run metadata')
-            st.json(metadata)
+    if not endpoint:st.warning('Connect your inference backend to enable a real comparison.')
